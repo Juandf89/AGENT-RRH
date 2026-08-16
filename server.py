@@ -343,16 +343,128 @@ def dispatch(req, state):
 # Streamable HTTP transport (remote deployment)
 # --------------------------------------------------------------------------
 
+LANDING_PAGE_SCRIPT = """
+(function () {
+  const skills = JSON.parse(document.getElementById('skills-data').textContent);
+  const skillNames = skills.map(function (s) { return s.name; });
+  const TOKEN_KEY = 'hrmcp_token';
+  const tokenInput = document.getElementById('token-input');
+  const mcpBase = window.location.origin + '/mcp';
+  const urlDisplay = document.getElementById('connect-url');
+  const copyBtn = document.getElementById('copy-url-btn');
+
+  tokenInput.value = sessionStorage.getItem(TOKEN_KEY) || '';
+
+  function updateConnectUrl() {
+    const t = tokenInput.value.trim();
+    if (!t) {
+      urlDisplay.textContent = mcpBase + '?token=<pega-tu-token-arriba>';
+      copyBtn.disabled = true;
+    } else {
+      urlDisplay.textContent = mcpBase + '?token=' + t;
+      copyBtn.disabled = false;
+    }
+  }
+  tokenInput.addEventListener('input', function () {
+    sessionStorage.setItem(TOKEN_KEY, tokenInput.value);
+    updateConnectUrl();
+  });
+  updateConnectUrl();
+
+  copyBtn.addEventListener('click', async function () {
+    try {
+      await navigator.clipboard.writeText(urlDisplay.textContent);
+      copyBtn.textContent = 'Copiado';
+      setTimeout(function () { copyBtn.textContent = 'Copiar'; }, 1500);
+    } catch (e) {
+      alert('No se pudo copiar automaticamente. Selecciona el texto y copia manualmente.');
+    }
+  });
+
+  function fillSelect(select, items) {
+    select.innerHTML = '';
+    items.forEach(function (v) {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      select.appendChild(opt);
+    });
+  }
+  document.querySelectorAll('.skill-select').forEach(function (sel) { fillSelect(sel, skillNames); });
+
+  async function callTool(name, args) {
+    const t = tokenInput.value.trim();
+    if (!t) { throw new Error('pega tu token arriba primero'); }
+    const res = await fetch(mcpBase, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name: name, arguments: args } })
+    });
+    if (res.status === 401) { throw new Error('401: token invalido'); }
+    const data = await res.json();
+    if (data.error) { throw new Error(data.error.message || 'error MCP'); }
+    const content = data.result && data.result.content;
+    if (content && content[0] && content[0].text) {
+      try { return JSON.parse(content[0].text); } catch (e) { return content[0].text; }
+    }
+    return data.result;
+  }
+
+  function showResult(el, value) {
+    if (value && typeof value === 'object' && value.encoding === 'base64' && value.content_base64) {
+      const preview = value.content_base64.slice(0, 120) + '... (' + value.content_base64.length + ' caracteres base64, truncado)';
+      value = Object.assign({}, value, { content_base64: preview });
+    }
+    el.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  }
+
+  async function run(btnId, outId, fn) {
+    const btn = document.getElementById(btnId);
+    const out = document.getElementById(outId);
+    btn.addEventListener('click', async function () {
+      out.textContent = 'Cargando...';
+      try { showResult(out, await fn()); }
+      catch (e) { out.textContent = 'Error: ' + e.message; }
+    });
+  }
+
+  run('btn-list-skills', 'out-list-skills', function () { return callTool('list_skills', {}); });
+
+  run('btn-get-skill', 'out-get-skill', function () {
+    return callTool('get_skill', { name: document.getElementById('sel-get-skill').value });
+  });
+
+  run('btn-list-files', 'out-list-files', async function () {
+    const name = document.getElementById('sel-list-files').value;
+    const result = await callTool('list_skill_files', { name: name });
+    if (result && result.files) {
+      fillSelect(document.getElementById('sel-read-file-path'), result.files.map(function (f) { return f.relative_path; }));
+    }
+    return result;
+  });
+
+  run('btn-read-file', 'out-read-file', function () {
+    const name = document.getElementById('sel-read-file-name').value;
+    const path = document.getElementById('sel-read-file-path').value;
+    if (!path) { throw new Error('ejecuta "Listar archivos" primero para elegir una ruta'); }
+    return callTool('read_skill_file', { name: name, path: path });
+  });
+})();
+"""
+
+
 def render_landing_page(state, base_url):
     mcp_url = base_url.rstrip("/") + "/mcp"
+    skills = list(state["skills"].values())
     cards = "".join(
         f"""
         <li class="skill">
           <h3>{html.escape(s['name'])}</h3>
           <p>{html.escape(s['description'])}</p>
         </li>"""
-        for s in state["skills"].values()
+        for s in skills
     ) or '<li class="skill empty">No hay skills cargadas.</li>'
+    skills_json = json.dumps([{"name": s["name"]} for s in skills])
 
     return f"""<!doctype html>
 <html lang="es">
@@ -366,7 +478,7 @@ def render_landing_page(state, base_url):
     margin: 0; padding: 3rem 1.5rem 4rem; background: #0b0d12; color: #e7e9ee;
     font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }}
-  main {{ max-width: 640px; margin: 0 auto; }}
+  main {{ max-width: 720px; margin: 0 auto; }}
   .badge {{
     display: inline-block; font-size: .75rem; letter-spacing: .04em; text-transform: uppercase;
     color: #7ee787; background: rgba(126,231,135,.12); border: 1px solid rgba(126,231,135,.35);
@@ -387,11 +499,30 @@ def render_landing_page(state, base_url):
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem;
   }}
   code {{ padding: .15rem .4rem; }}
-  pre {{ padding: .9rem 1rem; overflow-x: auto; }}
+  pre {{ padding: .9rem 1rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }}
   ol {{ padding-left: 1.2rem; color: #d6dae2; }}
   ol li {{ margin-bottom: .5rem; }}
   footer {{ margin-top: 3rem; color: #6b7280; font-size: .82rem; }}
   a {{ color: #7dabff; }}
+
+  .panel {{ background: #12151c; border: 1px solid #232733; border-radius: 12px; padding: 1.2rem; margin-bottom: 1rem; }}
+  .row {{ display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }}
+  input[type="password"], select {{
+    background: #0b0d12; color: #e7e9ee; border: 1px solid #2b3040; border-radius: 8px;
+    padding: .5rem .7rem; font-size: .9rem; flex: 1; min-width: 180px;
+  }}
+  button {{
+    background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: .5rem 1rem;
+    font-size: .88rem; cursor: pointer; white-space: nowrap;
+  }}
+  button:disabled {{ background: #2b3040; cursor: not-allowed; color: #6b7280; }}
+  button:hover:not(:disabled) {{ background: #3b76f0; }}
+  .tool-card {{ border-top: 1px solid #232733; padding-top: 1rem; margin-top: 1rem; }}
+  .tool-card:first-of-type {{ border-top: none; margin-top: 0; padding-top: 0; }}
+  .tool-card h3 {{ margin: 0 0 .3rem; font-size: .95rem; }}
+  .tool-card .desc {{ margin: 0 0 .6rem; color: #9aa4b2; font-size: .85rem; }}
+  .tool-card pre {{ margin: .6rem 0 0; max-height: 260px; overflow-y: auto; font-size: .8rem; }}
+  .hint {{ color: #6b7280; font-size: .8rem; margin: .5rem 0 0; }}
 </style>
 </head>
 <body>
@@ -404,20 +535,63 @@ def render_landing_page(state, base_url):
   <ul class="skill-list">{cards}
   </ul>
 
-  <h2>Como conectarlo</h2>
-  <ol>
-    <li>En Claude, ve a <strong>Settings &rarr; Conectores &rarr; Agregar conector personalizado</strong>.</li>
-    <li>Nombre: <code>{html.escape(SERVER_NAME)}</code></li>
-    <li>URL del servidor MCP remoto:<br>
-      <pre>{html.escape(mcp_url)}?token=&lt;tu-token&gt;</pre>
-      (pide el token a quien administra este servidor &mdash; no se muestra aqui por seguridad)
-    </li>
-  </ol>
+  <h2>Conexion rapida</h2>
+  <div class="panel">
+    <div class="row">
+      <input type="password" id="token-input" placeholder="Pega tu MCP_AUTH_TOKEN aqui" autocomplete="off">
+    </div>
+    <p class="hint">El token no se envia a ningun lado salvo a este mismo servidor; solo vive en esta pestana (sessionStorage).</p>
+    <div class="row" style="margin-top:.8rem">
+      <code id="connect-url" style="flex:1; min-width:220px; word-break:break-all;"></code>
+      <button id="copy-url-btn" disabled>Copiar</button>
+    </div>
+    <p class="hint">Pegala en Claude: Settings &rarr; Conectores &rarr; Agregar conector personalizado &rarr; URL del servidor MCP remoto.</p>
+  </div>
+
+  <h2>Probar el servidor</h2>
+  <div class="panel">
+    <div class="tool-card">
+      <h3>list_skills</h3>
+      <p class="desc">Lista todas las skills cargadas en este servidor.</p>
+      <button id="btn-list-skills">Ejecutar</button>
+      <pre id="out-list-skills"></pre>
+    </div>
+    <div class="tool-card">
+      <h3>get_skill</h3>
+      <p class="desc">Devuelve las instrucciones completas (SKILL.md) de una skill.</p>
+      <div class="row">
+        <select id="sel-get-skill" class="skill-select"></select>
+        <button id="btn-get-skill">Ejecutar</button>
+      </div>
+      <pre id="out-get-skill"></pre>
+    </div>
+    <div class="tool-card">
+      <h3>list_skill_files</h3>
+      <p class="desc">Lista los archivos incluidos en una skill (rutas y tamanos).</p>
+      <div class="row">
+        <select id="sel-list-files" class="skill-select"></select>
+        <button id="btn-list-files">Ejecutar</button>
+      </div>
+      <pre id="out-list-files"></pre>
+    </div>
+    <div class="tool-card">
+      <h3>read_skill_file</h3>
+      <p class="desc">Lee un archivo. Ejecuta list_skill_files primero para elegir la ruta.</p>
+      <div class="row">
+        <select id="sel-read-file-name" class="skill-select"></select>
+        <select id="sel-read-file-path"><option value="">(ejecuta list_skill_files primero)</option></select>
+        <button id="btn-read-file">Ejecutar</button>
+      </div>
+      <pre id="out-read-file"></pre>
+    </div>
+  </div>
 
   <footer>
     <a href="/health">/health</a> para el estado del servicio.
   </footer>
 </main>
+<script type="application/json" id="skills-data">{skills_json}</script>
+<script>{LANDING_PAGE_SCRIPT}</script>
 </body>
 </html>"""
 
