@@ -355,6 +355,14 @@ def run_http_server(state, host, port, auth_token):
             self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, Accept")
 
+        def _send_empty(self, status, extra_headers=None):
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            for k, v in (extra_headers or {}).items():
+                self.send_header(k, v)
+            self._cors()
+            self.end_headers()
+
         def _send_json(self, status, payload):
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
@@ -373,24 +381,39 @@ def run_http_server(state, host, port, auth_token):
             return urllib.parse.parse_qs(query).get("token", [None])[0] == auth_token
 
         def do_OPTIONS(self):
-            self.send_response(204)
-            self._cors()
-            self.end_headers()
+            self._send_empty(204)
 
         def do_GET(self):
             path = self.path.split("?", 1)[0].rstrip("/")
             if path in ("", "/health"):
                 self._send_json(200, {"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION})
                 return
-            self.send_response(404)
-            self._cors()
-            self.end_headers()
+            if path == "/mcp":
+                # Streamable HTTP allows GET to open an SSE stream; this server
+                # doesn't send server-initiated messages, so per spec reply 405
+                # (not 404) telling the client to fall back to POST-only mode.
+                if not self._authorized():
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                self._send_empty(405, {"Allow": "POST, OPTIONS"})
+                return
+            self._send_empty(404)
+
+        def do_DELETE(self):
+            # Streamable HTTP allows DELETE to end a session; this server is
+            # stateless (no sessions to end), so reply 405 rather than 501.
+            path = self.path.split("?", 1)[0].rstrip("/")
+            if path == "/mcp":
+                if not self._authorized():
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                self._send_empty(405, {"Allow": "POST, OPTIONS"})
+                return
+            self._send_empty(404)
 
         def do_POST(self):
             if self.path.split("?", 1)[0].rstrip("/") != "/mcp":
-                self.send_response(404)
-                self._cors()
-                self.end_headers()
+                self._send_empty(404)
                 return
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""  # always drain body, even on auth failure, or keep-alive desyncs
@@ -408,9 +431,7 @@ def run_http_server(state, host, port, auth_token):
 
             resp, status = dispatch(req, state)
             if resp is None:
-                self.send_response(status)
-                self._cors()
-                self.end_headers()
+                self._send_empty(status)
                 return
             self._send_json(status, resp)
 
