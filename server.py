@@ -20,6 +20,7 @@ import mimetypes
 import os
 import socketserver
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -366,7 +367,10 @@ def run_http_server(state, host, port, auth_token):
         def _authorized(self):
             if not auth_token:
                 return True
-            return self.headers.get("Authorization", "") == f"Bearer {auth_token}"
+            if self.headers.get("Authorization", "") == f"Bearer {auth_token}":
+                return True
+            query = urllib.parse.urlsplit(self.path).query
+            return urllib.parse.parse_qs(query).get("token", [None])[0] == auth_token
 
         def do_OPTIONS(self):
             self.send_response(204)
