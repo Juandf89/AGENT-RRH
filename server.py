@@ -15,6 +15,7 @@ Environment variable SKILLS_DIR is also honoured (flag wins).
 """
 
 import base64
+import html
 import json
 import mimetypes
 import os
@@ -342,6 +343,85 @@ def dispatch(req, state):
 # Streamable HTTP transport (remote deployment)
 # --------------------------------------------------------------------------
 
+def render_landing_page(state, base_url):
+    mcp_url = base_url.rstrip("/") + "/mcp"
+    cards = "".join(
+        f"""
+        <li class="skill">
+          <h3>{html.escape(s['name'])}</h3>
+          <p>{html.escape(s['description'])}</p>
+        </li>"""
+        for s in state["skills"].values()
+    ) or '<li class="skill empty">No hay skills cargadas.</li>'
+
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{SERVER_NAME}</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{
+    margin: 0; padding: 3rem 1.5rem 4rem; background: #0b0d12; color: #e7e9ee;
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }}
+  main {{ max-width: 640px; margin: 0 auto; }}
+  .badge {{
+    display: inline-block; font-size: .75rem; letter-spacing: .04em; text-transform: uppercase;
+    color: #7ee787; background: rgba(126,231,135,.12); border: 1px solid rgba(126,231,135,.35);
+    border-radius: 999px; padding: .2rem .7rem; margin-bottom: 1rem;
+  }}
+  h1 {{ font-size: 1.7rem; margin: 0 0 .4rem; }}
+  .sub {{ color: #9aa4b2; margin: 0 0 2rem; }}
+  h2 {{ font-size: 1rem; text-transform: uppercase; letter-spacing: .04em; color: #9aa4b2; margin: 2.2rem 0 .8rem; }}
+  ul.skill-list {{ list-style: none; margin: 0; padding: 0; display: grid; gap: .8rem; }}
+  .skill {{
+    background: #12151c; border: 1px solid #232733; border-radius: 12px; padding: 1rem 1.2rem;
+  }}
+  .skill h3 {{ margin: 0 0 .35rem; font-size: 1.02rem; }}
+  .skill p {{ margin: 0; color: #b3bac6; font-size: .92rem; }}
+  .skill.empty {{ color: #9aa4b2; }}
+  code, pre {{
+    background: #12151c; border: 1px solid #232733; border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem;
+  }}
+  code {{ padding: .15rem .4rem; }}
+  pre {{ padding: .9rem 1rem; overflow-x: auto; }}
+  ol {{ padding-left: 1.2rem; color: #d6dae2; }}
+  ol li {{ margin-bottom: .5rem; }}
+  footer {{ margin-top: 3rem; color: #6b7280; font-size: .82rem; }}
+  a {{ color: #7dabff; }}
+</style>
+</head>
+<body>
+<main>
+  <span class="badge">MCP server &middot; en linea</span>
+  <h1>{SERVER_NAME}</h1>
+  <p class="sub">Sirve Agent Skills por Model Context Protocol (Streamable HTTP). Version {SERVER_VERSION}.</p>
+
+  <h2>Skills disponibles</h2>
+  <ul class="skill-list">{cards}
+  </ul>
+
+  <h2>Como conectarlo</h2>
+  <ol>
+    <li>En Claude, ve a <strong>Settings &rarr; Conectores &rarr; Agregar conector personalizado</strong>.</li>
+    <li>Nombre: <code>{html.escape(SERVER_NAME)}</code></li>
+    <li>URL del servidor MCP remoto:<br>
+      <pre>{html.escape(mcp_url)}?token=&lt;tu-token&gt;</pre>
+      (pide el token a quien administra este servidor &mdash; no se muestra aqui por seguridad)
+    </li>
+  </ol>
+
+  <footer>
+    <a href="/health">/health</a> para el estado del servicio.
+  </footer>
+</main>
+</body>
+</html>"""
+
+
 def run_http_server(state, host, port, auth_token):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -372,6 +452,15 @@ def run_http_server(state, host, port, auth_token):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_html(self, status, html):
+            body = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(body)
+
         def _authorized(self):
             if not auth_token:
                 return True
@@ -385,8 +474,13 @@ def run_http_server(state, host, port, auth_token):
 
         def do_GET(self):
             path = self.path.split("?", 1)[0].rstrip("/")
-            if path in ("", "/health"):
+            if path == "/health":
                 self._send_json(200, {"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION})
+                return
+            if path == "":
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                base_url = f"{scheme}://{self.headers.get('Host', f'{host}:{port}')}"
+                self._send_html(200, render_landing_page(state, base_url))
                 return
             if path == "/mcp":
                 # Streamable HTTP allows GET to open an SSE stream; this server
