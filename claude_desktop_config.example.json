@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "hr-talent-coordinator": {
+      "command": "python",
+      "args": [
+        "C:\\Users\\DELL\\hr-talent-coordinator-mcp\\server.py"
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hr-talent-coordinator": {
+      "command": "python",
+      "args": ["./hr-talent-coordinator-mcp/server.py"],
+      "env": {}
+    }
+  }
+}

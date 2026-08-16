@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "hr-talent-coordinator": {
+      "type": "http",
+      "url": "https://tu-dominio.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer TU_MCP_AUTH_TOKEN"
+      }
+    }
+  }
+}
